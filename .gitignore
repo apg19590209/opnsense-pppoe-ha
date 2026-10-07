@@ -1,0 +1,18 @@
+# macOS / editors
+.DS_Store
+*.swp
+*~
+
+# OPNsense / deployment artifacts
+*.bak
+*.bak-*
+*.orig
+*.tar.gz
+*.tgz
+*.log
+
+# local state / secrets (never commit real configs or keys)
+config.xml
+*.local
+.env
+id_*
