@@ -1,0 +1,78 @@
+#!/bin/sh
+# 50-pppoe-failback - OPNsense CARP syshook for the PRIMARY node.
+#
+# Mirror image of 50-pppoe-failover. The WAN is PPPoE assigned directly to an
+# interface (there is NO WAN CARP VIP), so this hook keys off the LAN CARP VIP:
+#
+#   LAN -> MASTER      : (re)dial PPPoE on $WAN_IF (the primary reclaiming the
+#                        VIP), then spawn a detached recovery tracker that
+#                        pings 1.1.1.1 every 2 s and records the total
+#                        unattended recovery delay in $LOG.
+#   LAN -> BACKUP/INIT : log only - the primary deliberately does NOT suspend
+#                        its WAN, so it stays ready to re-dial instantly.
+#
+# rc.syshook invokes this with: $1 = <vhid>@<iface>   $2 = MASTER|BACKUP|INIT
+#
+# Deploy on the PRIMARY only:
+#   install -m 0755 50-pppoe-failback /usr/local/etc/rc.syshook.d/carp/50-pppoe-failback
+# Idempotent, kills nothing on the peer, and survives OPNsense upgrades because
+# it lives in the user hook directory rather than a stock file.
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+LOG=/var/log/pppoe_failback.log
+TRACK_PID=/var/run/pppoe_failback.tracker.pid
+WAN_IF=wan
+LAN_VHID=1
+PING_TARGET=1.1.1.1
+
+SUBSYS="${1:-}"
+TYPE="${2:-}"
+VHID="${SUBSYS%@*}"
+IFACE="${SUBSYS#*@}"
+
+log() {
+    printf '%s [failback] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "${LOG}"
+}
+
+# Detached recovery tracker: measure how long the WAN takes to come back.
+track() {
+    started=$(date +%s)
+    while :; do
+        if ping -c 1 -t 2 "${PING_TARGET}" >/dev/null 2>&1; then
+            log "WAN reachable again after $(( $(date +%s) - started ))s unattended"
+            return 0
+        fi
+        sleep 2
+    done
+}
+
+start_tracker() {
+    if [ -f "${TRACK_PID}" ] && kill -0 "$(cat "${TRACK_PID}" 2>/dev/null)" 2>/dev/null; then
+        log "recovery tracker already running (pid $(cat "${TRACK_PID}"))"
+        return 0
+    fi
+    ( track ) &
+    echo $! > "${TRACK_PID}"
+}
+
+# Only the LAN VIP drives WAN ownership in this design.
+[ "${VHID}" = "${LAN_VHID}" ] || exit 0
+
+case "${TYPE}" in
+    MASTER)
+        log "LAN ${IFACE} -> MASTER: reclaiming VIP, dialing PPPoE on ${WAN_IF}"
+        configctl interface reconfigure "${WAN_IF}" >>"${LOG}" 2>&1
+        start_tracker
+        ;;
+    BACKUP|INIT)
+        log "LAN ${IFACE} -> ${TYPE}: WAN left as-is (primary stays ready to dial)"
+        ;;
+    *)
+        log "unexpected CARP type '${TYPE}' for ${SUBSYS}"
+        exit 1
+        ;;
+esac
+
+exit 0

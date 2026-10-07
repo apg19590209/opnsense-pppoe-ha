@@ -1,0 +1,44 @@
+name: PHP Lint
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    name: PHP 8.2 lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+          tools: none
+
+      - name: Lint every PHP source
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          # Lint tracked files that are PHP either by extension or by the
+          # OPNsense "#!/usr/local/bin/php" shebang (hooks carry no extension).
+          while IFS= read -r file; do
+            case "${file}" in
+              *.php) : ;;
+              *)
+                head -n 1 "${file}" 2>/dev/null | grep -Eq '^#!.*php' || continue
+                ;;
+            esac
+            echo "::group::php -l ${file}"
+            php -l "${file}" || status=1
+            echo "::endgroup::"
+          done < <(git ls-files)
+          exit "${status}"
